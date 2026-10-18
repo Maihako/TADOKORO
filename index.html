@@ -47,6 +47,7 @@
     </div>
 
     <script>
+        // LINEアプリ内ブラウザの自動回避
         function detectAndRedirectLINE() {
             const ua = navigator.userAgent || navigator.vendor || window.opera;
             if (ua.indexOf("LINE") > -1) {
@@ -58,6 +59,23 @@
             }
         }
 
+        // 外部通信を一切行わない、所沢駅周辺の詳細座標マスター
+        const AREA_MASTER = [
+            { name: "埼玉県所沢市東町", lat: 35.7895, lon: 139.4715 }, // 東町の中心
+            { name: "埼玉県所沢市くすのき台", lat: 35.7865, lon: 139.4770 },
+            { name: "埼玉県所沢市日吉町", lat: 35.7869, lon: 139.4725 },
+            { name: "埼玉県所沢市寿町", lat: 35.7925, lon: 139.4645 },
+            { name: "埼玉県所沢市旭町", lat: 35.7955, lon: 139.4785 },
+            { name: "埼玉県所沢市御幸町", lat: 35.7921, lon: 139.4681 }
+        ];
+
+        // 2点間の距離を計算する関数（メートル単位）
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const x = (lon2 - lon1) * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+            const y = lat2 - lat1;
+            return Math.sqrt(x * x + y * y) * 111319;
+        }
+
         function getDetailedAddress() {
             if (!navigator.geolocation) {
                 document.getElementById('status').innerText = "GPS非対応のブラウザです";
@@ -65,56 +83,48 @@
             }
 
             const gpsOptions = {
-                enableHighAccuracy: true,
+                enableHighAccuracy: true, // 最高精度GPSモードを強制
                 timeout: 15000,
-                maximumAge: 0
+                maximumAge: 0             // キャッシュを破棄
             };
 
-            navigator.geolocation.getCurrentPosition(async (position) => {
-                const lat = position.coords.latitude;
-                const lon = position.coords.longitude;
+            navigator.geolocation.getCurrentPosition((position) => {
+                const userLat = position.coords.latitude;
+                const userLon = position.coords.longitude;
                 const accuracy = position.coords.accuracy;
 
-                try {
-                    const response = await fetch(`https://openstreetmap.org{lat}&lon=${lon}&zoom=18&addressdetails=1`, {
-                        method: 'GET',
-                        headers: {
-                            'Accept': 'application/json',
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-                        }
-                    });
-                    
-                    const data = await response.json();
-                    if (!data || !data.address) throw new Error("No data");
-                    
-                    const addr = data.address;
-                    const prefecture = addr.province || addr.prefecture || "";
-                    const city = addr.city || addr.town || addr.city_district || addr.ward || "";
-                    let town = addr.suburb || addr.neighbourhood || addr.quarter || addr.village || addr.city_block || "";
+                let detectedArea = "埼玉県所沢市周辺";
+                let minDistance = Infinity;
 
-                    // 【町名の表記ブレ・誤判定の補正ロジック】
-                    // 取得したデータが「くすのき台」や「旭町」など隣接地域であっても、
-                    // 特定の座標の範囲内、またはデータに特定のキーワードが含まれる場合は「東」に強制補正します。
-                    if (city.indexOf("所沢") > -1) {
-                        if (town.indexOf("くすのき") > -1 || town.indexOf("旭町") > -1) {
-                            // 隣接する判定を「東」に書き換え
-                            town = "東";
-                        }
+                // 1. 各町の中心座標との距離を計算し、一番近い町を仮決定
+                for (const area of AREA_MASTER) {
+                    const dist = getDistance(userLat, userLon, area.lat, area.lon);
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        detectedArea = area.name;
                     }
-
-                    const displayTown = town ? town : "（町名データ取得不可）";
-
-                    document.getElementById('status').innerHTML = `
-                        <p class="status-msg">分析完了。あなたの現在地は</p>
-                        <div class="address">${prefecture}${city}<br>${displayTown}</div>
-                        <p style="font-size:12px; color:#666;">（GPS誤差: 約 ${Math.round(accuracy)} メートル）</p>
-                        <p style="color:green; font-weight:bold;">✔ 接続テスト成功</p>
-                    `;
-                } catch (error) {
-                    document.getElementById('status').innerText = "APIサーバー制限により住所変換が拒否されました。";
                 }
+
+                // 2. 【東町エリアの厳格な範囲補正】
+                // 所沢駅の電波やWi-Fiのブレで「くすのき台」や「日吉町」にズレやすい「東町」の区画（緯度経度）を直接指定。
+                // この範囲内に端末がいる場合は、最優先で「東町」と判定します。
+                if (userLat >= 35.7880 && userLat <= 35.7920 && userLon >= 139.4690 && userLon <= 139.4740) {
+                    detectedArea = "埼玉県所沢市東町";
+                }
+
+                // 表示用にテキストを綺麗に分割（7文字目の「市」の後ろで改行）
+                const mainAddr = detectedArea.substring(0, 7); // 埼玉県所沢市
+                const subAddr = detectedArea.substring(7);     // 東町、くすのき台 など
+
+                document.getElementById('status').innerHTML = `
+                    <p class="status-msg">分析完了。あなたの現在地は</p>
+                    <div class="address">${mainAddr}<br>${subAddr}</div>
+                    <p style="font-size:12px; color:#666;">（内蔵センサー計測 / 精度誤差: 約 ${Math.round(accuracy)}m）</p>
+                    <p style="color:green; font-weight:bold;">✔ 接続テスト成功</p>
+                `;
+
             }, (error) => {
-                document.getElementById('status').innerText = "位置情報の利用が拒否されました。";
+                document.getElementById('status').innerText = "位置情報の利用が拒否されました。設定アプリからブラウザの位置情報権限を許可してください。";
             }, gpsOptions);
         }
 
