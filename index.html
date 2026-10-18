@@ -1,152 +1,189 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>接続テスト / 高精密現在地特定</title>
-    <style>
-        body {
-            margin: 0;
-            padding: 20px;
-            background: #f4f7f6;
-            font-family: sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 80vh;
-        }
-        #test-panel {
-            background: #ffffff;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-            width: 100%;
-            max-width: 360px;
-            text-align: center;
-        }
-        h2 { margin: 0 0 20px 0; font-size: 20px; color: #333; border-bottom: 2px solid #0056b3; padding-bottom: 10px; }
-        .status-msg { margin: 15px 0; font-size: 15px; color: #555; }
-        .address { 
-            display: block;
-            font-weight: bold; 
-            color: #e63946; 
-            font-size: 24px; 
-            margin: 15px 0;
-            background: #ffe3e3;
-            padding: 12px;
-            border-radius: 6px;
-            word-break: break-all;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>高精度位置情報取得</title>
+<style>
+body {
+  font-family: sans-serif;
+  background: #f3f6f9;
+  padding: 20px;
+  text-align: center;
+}
+.card {
+  max-width: 400px;
+  margin: 30px auto;
+  padding: 24px;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 4px 16px #0001;
+}
+button {
+  padding: 12px 20px;
+  border: 0;
+  border-radius: 8px;
+  background: #0066cc;
+  color: white;
+  font-size: 16px;
+}
+#result {
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+}
+</style>
 </head>
 <body>
 
-    <div id="test-panel">
-        <h2>接続テスト / Connection Test</h2>
-        <div id="status">位置情報を自動解析中...<br>（ポップアップが出たら許可してください）</div>
-    </div>
+<div class="card">
+  <h2>現在地測定</h2>
+  <p id="status">ボタンを押して測定を開始</p>
+  <div id="result"></div>
+  <button id="start">測定開始</button>
+</div>
 
-    <script>
-        // LINEアプリ内ブラウザの自動回避処理
-        function detectAndRedirectLINE() {
-            const ua = navigator.userAgent || navigator.vendor || window.opera;
-            if (ua.indexOf("LINE") > -1) {
-                const currentUrl = window.location.href;
-                if (currentUrl.indexOf("openExternalBrowser=1") === -1) {
-                    const separator = currentUrl.indexOf("?") === -1 ? "?" : "&";
-                    window.location.href = currentUrl + separator + "openExternalBrowser=1";
-                }
-            }
-        }
+<script>
+const statusEl = document.getElementById("status");
+const resultEl = document.getElementById("result");
+const startBtn = document.getElementById("start");
 
-        // 2点間の距離を計算する関数（メートル単位）
-        function getDistance(lat1, lon1, lat2, lon2) {
-            const x = (lon2 - lon1) * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
-            const y = lat2 - lat1;
-            return Math.sqrt(x * x + y * y) * 111319;
-        }
+startBtn.addEventListener("click", locate);
 
-        // 【通信不要】主要地域の詳細座標データマスター
-        // 他の街に移動したときも、ここに登録された一番近い場所が自動で引き当てられます
-        const LOCATION_MASTER = [
-            // 所沢市周辺
-            { name: "埼玉県所沢市<br>東町", lat: 35.7895, lon: 139.4715 },
-            { name: "埼玉県所沢市<br>くすのき台", lat: 35.7865, lon: 139.4770 },
-            { name: "埼玉県所沢市<br>日吉町", lat: 35.7869, lon: 139.4725 },
-            { name: "埼玉県所沢市<br>旭町", lat: 35.7955, lon: 139.4785 },
-            { name: "埼玉県所沢市<br>寿町", lat: 35.7925, lon: 139.4645 },
-            { name: "埼玉県所沢市<br>小手指町", lat: 35.8015, lon: 139.4380 },
-            
-            // 周辺の市
-            { name: "埼玉県狭山市<br>祇園", lat: 35.8580, lon: 139.4130 },
-            { name: "埼玉県入間市<br>豊岡", lat: 35.8395, lon: 139.3880 },
-            { name: "埼玉県川越市<br>脇田町", lat: 35.9135, lon: 139.4840 },
-            { name: "さいたま市大宮区<br>錦町", lat: 35.9065, lon: 139.6240 },
-            { name: "さいたま市浦和区<br>高砂", lat: 35.8595, lon: 139.6570 },
-            
-            // 東京都
-            { name: "東京都新宿区<br>新宿", lat: 35.6910, lon: 139.7005 },
-            { name: "東京都豊島区<br>南池袋", lat: 35.7295, lon: 139.7110 },
-            { name: "東京都渋谷区<br>道玄坂", lat: 35.6585, lon: 139.7015 },
-            { name: "東京都練馬区<br>練馬", lat: 35.7355, lon: 139.6520 },
-            { name: "東京都東村山市<br>本町", lat: 35.7615, lon: 139.4645 },
-            { name: "東京都西東京市<br>南町", lat: 35.7285, lon: 139.5380 }
-        ];
+function locate() {
+  if (!navigator.geolocation) {
+    statusEl.textContent = "位置情報に対応していません";
+    return;
+  }
 
-        function getDetailedAddress() {
-            if (!navigator.geolocation) {
-                document.getElementById('status').innerText = "GPS非対応のブラウザです";
-                return;
-            }
+  startBtn.disabled = true;
+  resultEl.replaceChildren();
+  statusEl.textContent = "高精度で測位中...";
 
-            const gpsOptions = {
-                enableHighAccuracy: true,
-                timeout: 15000,
-                maximumAge: 0
-            };
+  let best = null;
+  let watchId = null;
+  let finished = false;
 
-            navigator.geolocation.getCurrentPosition((position) => {
-                const lat = position.coords.latitude;
-                const lon = position.coords.longitude;
-                const accuracy = position.coords.accuracy;
+  const finish = async () => {
+    if (finished) return;
+    finished = true;
 
-                let matchedAddress = "埼玉県所沢市<br>周辺エリア";
-                let minDistance = Infinity;
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+    }
 
-                // 【東町のブレの最優先ガード】
-                // 所沢駅前でGPSがわずかにブレて「くすのき台」や「日吉町」の基準点に近付いてしまった場合でも、
-                // 東町の正確な区画内にいる場合は、距離計算をスキップして最優先で「東町」にします。
-                if (lat >= 35.7885 && lat <= 35.7925 && lon >= 139.4690 && lon <= 139.4740) {
-                    matchedAddress = "埼玉県所沢市<br>東町";
-                } else {
-                    // それ以外の場所にいるときは、内蔵マスターデータから一番近い場所を自動計算
-                    for (const loc of LOCATION_MASTER) {
-                        const dist = getDistance(lat, lon, loc.lat, loc.lon);
-                        if (dist < minDistance) {
-                            minDistance = dist;
-                            matchedAddress = loc.name;
-                        }
-                    }
-                }
+    if (!best) {
+      statusEl.textContent = "位置情報を取得できませんでした";
+      startBtn.disabled = false;
+      return;
+    }
 
-                // 画面を書き換え
-                document.getElementById('status').innerHTML = `
-                    <p class="status-msg">分析完了。あなたの現在地は</p>
-                    <div class="address">${matchedAddress}</div>
-                    <p style="font-size:12px; color:#666;">（高精密内蔵センサー計測 / 誤差約 ${Math.round(accuracy)}m）</p>
-                    <p style="color:green; font-weight:bold;">✔ 接続テスト成功</p>
-                `;
+    const { latitude, longitude, accuracy } = best.coords;
+    statusEl.textContent = "座標を取得。住所を検索中...";
 
-            }, (error) => {
-                document.getElementById('status').innerHTML = `
-                    <p class="status-msg" style="color:#e63946;">❌ 位置情報の利用が拒否されました</p>
-                    <p style="font-size: 13px; color: #666; text-align: left;">スマートフォンの設定やブラウザの権限で、このサイトへの「位置情報の共有」を許可に変更し、ページを再読み込みしてください。</p>
-                `;
-            }, gpsOptions);
-        }
+    const coords = document.createElement("p");
+    coords.textContent =
+      `緯度: ${latitude}\n経度: ${longitude}\n推定誤差: 約${Math.round(accuracy)}m`;
+    resultEl.appendChild(coords);
 
-        detectAndRedirectLINE();
-        window.addEventListener('DOMContentLoaded', getDetailedAddress);
-    </script>
+    try {
+      const url = new URL(
+        "https://nominatim.openstreetmap.org/reverse"
+      );
+
+      url.search = new URLSearchParams({
+        format: "jsonv2",
+        lat: latitude,
+        lon: longitude,
+        zoom: "18",
+        addressdetails: "1",
+        "accept-language": "ja"
+      });
+
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        throw new Error("住所検索サービスが利用できません");
+      }
+
+      const data = await response.json();
+
+      if (!data.address) {
+        throw new Error("住所が見つかりません");
+      }
+
+      const a = data.address;
+      const address = [
+        a.state || a.province || a.prefecture,
+        a.city || a.town || a.city_district || a.ward,
+        a.suburb || a.neighbourhood || a.village || a.hamlet
+      ].filter(Boolean).join("");
+
+      const heading = document.createElement("h3");
+      heading.textContent = "推定住所";
+      resultEl.appendChild(heading);
+
+      const addressEl = document.createElement("p");
+      addressEl.textContent = address || data.display_name || "住所不明";
+      resultEl.appendChild(addressEl);
+
+      statusEl.textContent = "測位完了";
+    } catch (error) {
+      statusEl.textContent =
+        "座標は取得済みですが、住所検索に失敗しました";
+    } finally {
+      startBtn.disabled = false;
+    }
+  };
+
+  watchId = navigator.geolocation.watchPosition(
+    position => {
+      if (
+        !best ||
+        position.coords.accuracy < best.coords.accuracy
+      ) {
+        best = position;
+      }
+
+      statusEl.textContent =
+        `測位中... 推定誤差 約${Math.round(
+          best.coords.accuracy
+        )}m`;
+
+      if (position.coords.accuracy <= 15) {
+        finish();
+      }
+    },
+    error => {
+      if (best) {
+        finish();
+        return;
+      }
+
+      const messages = {
+        1: "位置情報の許可が必要です",
+        2: "位置情報を取得できません",
+        3: "測位がタイムアウトしました"
+      };
+
+      statusEl.textContent =
+        messages[error.code] || "測位エラー";
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+      startBtn.disabled = false;
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: 30000
+    }
+  );
+
+  // 30秒後に、取得できた中で最良の結果を採用
+  setTimeout(finish, 30000);
+}
+</script>
+
 </body>
 </html>
