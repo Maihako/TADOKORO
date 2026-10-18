@@ -43,7 +43,7 @@
 
     <div id="test-panel">
         <h2>接続テスト / Connection Test</h2>
-        <div id="status">位置情報を解析中...<br>（ポップアップが出たら許可してください）</div>
+        <div id="status">位置情報を自動解析中...<br>（ポップアップが出たら許可してください）</div>
     </div>
 
     <script>
@@ -59,22 +59,33 @@
             }
         }
 
-        // 外部通信を一切行わない、所沢駅周辺の詳細座標マスター
-        const AREA_MASTER = [
-            { name: "埼玉県所沢市東町", lat: 35.7895, lon: 139.4715 }, // 東町の中心
-            { name: "埼玉県所沢市くすのき台", lat: 35.7865, lon: 139.4770 },
-            { name: "埼玉県所沢市日吉町", lat: 35.7869, lon: 139.4725 },
-            { name: "埼玉県所沢市寿町", lat: 35.7925, lon: 139.4645 },
-            { name: "埼玉県所沢市旭町", lat: 35.7955, lon: 139.4785 },
-            { name: "埼玉県所沢市御幸町", lat: 35.7921, lon: 139.4681 }
-        ];
+        // 地図情報から自動で住所文字列を抽出するコールバック関数（JSONP）
+        window.handleGeocodeResult = function(data) {
+            const statusContent = document.getElementById('status');
+            
+            // APIから住所データが正しく戻ってきたかチェック
+            if (data && data.coordinate && data.coordinate.address) {
+                const fullAddress = data.coordinate.address; // 例: "埼玉県所沢市東町"
+                
+                // 表示用に「市」や「区」の後ろで綺麗に改行を入れる整形処理
+                let formattedAddress = fullAddress;
+                const cityIndex = fullAddress.indexOf("市");
+                const wardIndex = fullAddress.indexOf("区");
+                const targetIndex = cityIndex > -1 ? cityIndex : wardIndex;
+                
+                if (targetIndex > -1) {
+                    formattedAddress = fullAddress.substring(0, targetIndex + 1) + "<br>" + fullAddress.substring(targetIndex + 1);
+                }
 
-        // 2点間の距離を計算する関数（メートル単位）
-        function getDistance(lat1, lon1, lat2, lon2) {
-            const x = (lon2 - lon1) * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
-            const y = lat2 - lat1;
-            return Math.sqrt(x * x + y * y) * 111319;
-        }
+                statusContent.innerHTML = `
+                    <p class="status-msg">分析完了。あなたの現在地は</p>
+                    <div class="address">${formattedAddress}</div>
+                    <p style="color:green; font-weight:bold;">✔ 接続テスト成功</p>
+                `;
+            } else {
+                statusContent.innerText = "自動住所変換に失敗しました。電波の良い場所で再試行してください。";
+            }
+        };
 
         function getDetailedAddress() {
             if (!navigator.geolocation) {
@@ -83,48 +94,27 @@
             }
 
             const gpsOptions = {
-                enableHighAccuracy: true, // 最高精度GPSモードを強制
+                enableHighAccuracy: true, // 最高精度GPSモード
                 timeout: 15000,
-                maximumAge: 0             // キャッシュを破棄
+                maximumAge: 0             // キャッシュを破棄して今の位置を測る
             };
 
             navigator.geolocation.getCurrentPosition((position) => {
-                const userLat = position.coords.latitude;
-                const userLon = position.coords.longitude;
-                const accuracy = position.coords.accuracy;
+                const lat = position.coords.latitude;
+                const lon = position.coords.longitude;
 
-                let detectedArea = "埼玉県所沢市周辺";
-                let minDistance = Infinity;
-
-                // 1. 各町の中心座標との距離を計算し、一番近い町を仮決定
-                for (const area of AREA_MASTER) {
-                    const dist = getDistance(userLat, userLon, area.lat, area.lon);
-                    if (dist < minDistance) {
-                        minDistance = dist;
-                        detectedArea = area.name;
-                    }
-                }
-
-                // 2. 【東町エリアの厳格な範囲補正】
-                // 所沢駅の電波やWi-Fiのブレで「くすのき台」や「日吉町」にズレやすい「東町」の区画（緯度経度）を直接指定。
-                // この範囲内に端末がいる場合は、最優先で「東町」と判定します。
-                if (userLat >= 35.7880 && userLat <= 35.7920 && userLon >= 139.4690 && userLon <= 139.4740) {
-                    detectedArea = "埼玉県所沢市東町";
-                }
-
-                // 表示用にテキストを綺麗に分割（7文字目の「市」の後ろで改行）
-                const mainAddr = detectedArea.substring(0, 7); // 埼玉県所沢市
-                const subAddr = detectedArea.substring(7);     // 東町、くすのき台 など
-
-                document.getElementById('status').innerHTML = `
-                    <p class="status-msg">分析完了。あなたの現在地は</p>
-                    <div class="address">${mainAddr}<br>${subAddr}</div>
-                    <p style="font-size:12px; color:#666;">（内蔵センサー計測 / 精度誤差: 約 ${Math.round(accuracy)}m）</p>
-                    <p style="color:green; font-weight:bold;">✔ 接続テスト成功</p>
-                `;
+                // スマホファイル内からでもセキュリティブロック（CORS）を受けないJSONP形式のスクリプトを動的生成
+                // 登録・キー不要で緯度経度から日本の住所を自動逆引きしてくれるAPIを利用
+                const script = document.createElement('script');
+                script.src = `https://geocoding.jp{lat}&lon=${lon}&callback=handleGeocodeResult`;
+                script.onerror = function() {
+                    document.getElementById('status').innerText = "通信エラーが発生しました。インターネット接続を確認してください。";
+                };
+                
+                document.body.appendChild(script);
 
             }, (error) => {
-                document.getElementById('status').innerText = "位置情報の利用が拒否されました。設定アプリからブラウザの位置情報権限を許可してください。";
+                document.getElementById('status').innerText = "位置情報の利用が拒否されました。設定アプリから位置情報権限を許可してください。";
             }, gpsOptions);
         }
 
