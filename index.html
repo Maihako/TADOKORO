@@ -4,18 +4,23 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>高速・高精度現在地測定</title>
+<meta name="theme-color" content="#f4f7f6">
+<title>屋内対応・高精度現在地測定</title>
 <style>
 * { box-sizing: border-box; }
 body {
   margin: 0;
   padding: 20px;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
   background: #f4f7f6;
-  font-family: sans-serif;
+  color: #263238;
+  font-family: system-ui, sans-serif;
 }
 .card {
+  width: 100%;
   max-width: 460px;
-  margin: 20px auto;
   padding: 24px;
   background: white;
   border-radius: 16px;
@@ -24,17 +29,18 @@ body {
 h1 { font-size: 23px; text-align: center; }
 #status {
   padding: 12px;
-  background: #eef5ff;
   border-radius: 9px;
+  background: #eef5ff;
+  text-align: center;
   line-height: 1.6;
 }
 #result { overflow-wrap: anywhere; line-height: 1.75; }
 .address {
-  padding: 14px;
   background: #fff0f0;
+  padding: 14px;
   border-radius: 9px;
   font-size: 20px;
-  font-weight: bold;
+  font-weight: 700;
 }
 .muted { color: #667085; font-size: 13px; }
 button {
@@ -53,15 +59,27 @@ button:disabled { opacity: .6; }
 </head>
 <body>
 <main class="card">
-<h1>高速・高精度現在地測定</h1>
-<p id="status">測定開始を押してください</p>
+<h1>屋内対応・高精度現在地測定</h1>
+<p id="status" role="status" aria-live="polite">
+「測定開始」を押してください。
+</p>
 <div id="result"></div>
 <button id="start">測定開始</button>
-<button id="stop" hidden>測定終了</button>
+<button id="stop" hidden>測定を終了して最良結果を表示</button>
 <p class="muted">
-APIキー不要。HTTPSが必要です。
-5m以内の精度は保証されません。
+APIキー不要・HTTPS必須。屋内ではWi-Fi・基地局情報も使いますが、5m以内は保証できません。
 </p>
+
+<details>
+<summary>屋内で精度を上げるコツ</summary>
+<ul>
+<li>端末の位置情報をオンにする。</li>
+<li>Google位置情報の精度をオンにする（対応端末のみ）。</li>
+<li>Wi-Fiをオンにする。</li>
+<li>窓の近くで端末を動かさず測定する。</li>
+<li>省電力モードを解除して試す。</li>
+</ul>
+</details>
 </main>
 
 <script>
@@ -87,12 +105,10 @@ APIキー不要。HTTPSが必要です。
   function stopWatch() {
     if (watchId !== null) {
       navigator.geolocation.clearWatch(watchId);
-      watchId = null;
     }
-    if (timerId !== null) {
-      clearTimeout(timerId);
-      timerId = null;
-    }
+    if (timerId !== null) clearTimeout(timerId);
+    watchId = null;
+    timerId = null;
     stopBtn.hidden = true;
   }
 
@@ -118,7 +134,8 @@ APIキー不要。HTTPSが必要です。
         });
 
         const r = await fetch(u);
-        if (!r.ok) throw new Error("Nominatimエラー");
+        if (!r.ok) throw new Error("Nominatim HTTP " + r.status);
+
         const d = await r.json();
         const a = d.address || {};
 
@@ -148,10 +165,11 @@ APIキー不要。HTTPSが必要です。
         });
 
         const r = await fetch(u);
-        if (!r.ok) throw new Error("Photonエラー");
+        if (!r.ok) throw new Error("Photon HTTP " + r.status);
+
         const d = await r.json();
         const p = d.features?.[0]?.properties;
-        if (!p) throw new Error("住所データなし");
+        if (!p) throw new Error("Photon住所データなし");
 
         return {
           prefecture: first(p.state, p.province),
@@ -175,7 +193,7 @@ APIキー不要。HTTPSが必要です。
       .map(x => x.value);
 
     if (!good.length) {
-      throw new Error("住所検索サービスに接続できません");
+      throw new Error("住所検索サービスに接続できませんでした");
     }
 
     const keys = [
@@ -183,9 +201,9 @@ APIキー不要。HTTPSが必要です。
     ];
     const merged = {};
 
-    for (const key of keys) {
+    keys.forEach(key => {
       merged[key] = first(...good.map(x => x[key]));
-    }
+    });
 
     const address = keys
       .map(key => merged[key])
@@ -200,21 +218,34 @@ APIキー不要。HTTPSが必要です。
       "address"
     );
 
+    addText("h3", "住所の取得内容");
+    const labels = [
+      ["都道府県", "prefecture"],
+      ["市区町村", "city"],
+      ["町名など", "town"],
+      ["道路名", "street"],
+      ["番地", "number"]
+    ];
+
+    labels.forEach(([label, key]) => {
+      addText("p", `${label}: ${merged[key] || "データなし"}`);
+    });
+
     addText(
       "p",
-      "町名・丁目・番地は地図データに登録されている範囲で表示されます。",
+      "丁目・番地は地図データに登録されている範囲で表示されます。",
       "muted"
     );
   }
 
   async function finish(id, metTarget) {
     if (finished || id !== runId) return;
-
     finished = true;
     stopWatch();
 
     if (!best) {
-      statusEl.textContent = "位置情報を取得できませんでした";
+      statusEl.textContent =
+        "位置情報を取得できませんでした。設定を確認してください。";
       startBtn.disabled = false;
       return;
     }
@@ -222,7 +253,7 @@ APIキー不要。HTTPSが必要です。
     const { latitude, longitude, accuracy } = best.coords;
 
     statusEl.textContent = metTarget
-      ? "5m以内の推定誤差を取得しました"
+      ? "推定誤差5m以内の結果を取得しました"
       : "測位終了：取得した最良結果を表示します";
 
     addText("h3", "測位結果");
@@ -236,8 +267,8 @@ APIキー不要。HTTPSが必要です。
     addText(
       "p",
       metTarget
-        ? "端末の推定誤差は5m以内です。実際の誤差の保証ではありません。"
-        : "端末が5m以内の精度を報告しませんでした。",
+        ? "端末の推定誤差は5m以内です。実際の誤差を保証するものではありません。"
+        : "5m以内の推定誤差は取得できませんでした。コードだけで精度を強制することはできません。",
       "muted"
     );
 
@@ -251,12 +282,13 @@ APIキー不要。HTTPSが必要です。
     resultEl.appendChild(link);
 
     try {
-      statusEl.textContent = "住所を検索中...";
+      statusEl.textContent = "座標取得完了。住所を検索中...";
       await addressLookup(latitude, longitude, id);
+
       if (id === runId) {
         statusEl.textContent = metTarget
           ? "測位・住所検索完了（推定誤差5m以内）"
-          : "住所検索完了（推定誤差5m超）";
+          : "住所検索完了（5m以内の精度には未到達）";
       }
     } catch (e) {
       if (id === runId) {
@@ -276,19 +308,21 @@ APIキー不要。HTTPSが必要です。
     resultEl.replaceChildren();
 
     if (!navigator.geolocation) {
-      statusEl.textContent = "位置情報に対応していません";
+      statusEl.textContent =
+        "このブラウザは位置情報に対応していません。";
       return;
     }
 
     if (!window.isSecureContext &&
         location.hostname !== "localhost") {
-      statusEl.textContent = "HTTPSで開いてください";
+      statusEl.textContent = "位置情報にはHTTPS接続が必要です。";
       return;
     }
 
     startBtn.disabled = true;
     stopBtn.hidden = false;
-    statusEl.textContent = "測位中...";
+    statusEl.textContent =
+      "測位中。5m以内の結果が届いたら終了します（最大90秒）。";
 
     watchId = navigator.geolocation.watchPosition(
       position => {
@@ -304,7 +338,6 @@ APIキー不要。HTTPSが必要です。
         statusEl.textContent =
           `測位中：最良の推定誤差 ${best.coords.accuracy.toFixed(1)}m`;
 
-        // 5m以内の結果が届いたらすぐ終了
         if (position.coords.accuracy <= 5) {
           finish(id, true);
         }
@@ -318,9 +351,9 @@ APIキー不要。HTTPSが必要です。
         }
 
         const messages = {
-          1: "位置情報の許可が必要です",
-          2: "位置情報を取得できません。屋外で再試行してください",
-          3: "測位がタイムアウトしました"
+          1: "位置情報の許可が必要です。",
+          2: "位置情報を取得できません。窓の近くで再試行してください。",
+          3: "測位がタイムアウトしました。"
         };
 
         statusEl.textContent =
@@ -332,7 +365,7 @@ APIキー不要。HTTPSが必要です。
       {
         enableHighAccuracy: true,
         maximumAge: 0,
-        timeout: 65000
+        timeout: 95000
       }
     );
 
@@ -343,7 +376,7 @@ APIキー不要。HTTPSが必要です。
           !!best && best.coords.accuracy <= 5
         );
       }
-    }, 60000);
+    }, 90000);
   }
 
   startBtn.addEventListener("click", locate);
@@ -353,7 +386,8 @@ APIキー不要。HTTPSが必要です。
       finish(runId, best.coords.accuracy <= 5);
     } else {
       stopWatch();
-      statusEl.textContent = "まだ位置情報がありません";
+      statusEl.textContent =
+        "測位を終了しました。位置情報がまだありません。";
       startBtn.disabled = false;
     }
   });
