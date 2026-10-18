@@ -1,46 +1,53 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f4f7f6">
 <title>高精度現在地測定</title>
 <style>
+* { box-sizing: border-box; }
 body {
-  font-family: sans-serif;
-  background: #f4f7f6;
-  padding: 20px;
-  text-align: center;
+  margin: 0; padding: 20px; min-height: 100vh;
+  display: grid; place-items: center;
+  background: #f4f7f6; color: #263238;
+  font-family: system-ui, sans-serif;
 }
 .card {
-  max-width: 420px;
-  margin: 20px auto;
-  padding: 24px;
-  background: white;
-  border-radius: 14px;
-  box-shadow: 0 4px 16px #0001;
+  width: 100%; max-width: 460px; margin: 20px auto;
+  padding: 24px; background: white; border-radius: 16px;
+  box-shadow: 0 4px 22px #0001;
 }
+h1 { font-size: 23px; text-align: center; }
+#status {
+  padding: 12px; border-radius: 9px;
+  background: #eef5ff; text-align: center;
+}
+#result { overflow-wrap: anywhere; line-height: 1.75; }
+.address {
+  background: #fff0f0; padding: 14px;
+  border-radius: 9px; font-size: 20px; font-weight: bold;
+}
+.muted { color: #667085; font-size: 13px; }
 button {
-  padding: 12px 20px;
-  border: 0;
-  border-radius: 8px;
-  background: #075db5;
-  color: white;
-  font-size: 16px;
+  width: 100%; margin-top: 14px; padding: 13px;
+  border: 0; border-radius: 9px;
+  background: #075db5; color: white; font-size: 17px;
 }
-#result {
-  overflow-wrap: anywhere;
-  line-height: 1.8;
-}
+button:disabled { opacity: .6; }
 </style>
 </head>
 <body>
-<div class="card">
-<h2>高精度現在地測定</h2>
+<main class="card">
+<h1>高精度現在地測定</h1>
 <p id="status">測定開始を押してください</p>
 <div id="result"></div>
 <button id="start">測定開始</button>
-</div>
+<p class="muted">
+APIキー不要。HTTPSが必要です。
+住所の細かさは地図データによって異なります。
+</p>
+</main>
 
 <script>
 const statusEl = document.getElementById("status");
@@ -49,14 +56,12 @@ const startBtn = document.getElementById("start");
 
 let watchId = null;
 let timerId = null;
-let best = null;
-let goodSamples = 0;
-let startedAt = 0;
-let finished = false;
+let runId = 0;
 
-function addText(tag, text) {
+function addText(tag, text, cls = "") {
   const el = document.createElement(tag);
   el.textContent = text;
+  if (cls) el.className = cls;
   resultEl.appendChild(el);
 }
 
@@ -71,76 +76,145 @@ function stop() {
   }
 }
 
-async function findAddress(lat, lon) {
-  const services = [
-    async () => {
-      const url = new URL(
-        "https://nominatim.openstreetmap.org/reverse"
-      );
-      url.search = new URLSearchParams({
-        format: "jsonv2",
-        lat: String(lat),
-        lon: String(lon),
-        zoom: "18",
-        addressdetails: "1",
-        "accept-language": "ja"
-      });
-
-      const response = await fetch(url);
-      if (!response.ok) throw new Error("Nominatim error");
-
-      const data = await response.json();
-      if (!data.address) throw new Error("住所なし");
-      return data.address;
-    },
-    async () => {
-      const url = new URL(
-        "https://photon.komoot.io/reverse"
-      );
-      url.search = new URLSearchParams({
-        lat: String(lat),
-        lon: String(lon),
-        lang: "ja"
-      });
-
-      const response = await fetch(url);
-      if (!response.ok) throw new Error("Photon error");
-
-      const data = await response.json();
-      const p = data.features?.[0]?.properties;
-      if (!p) throw new Error("住所なし");
-      return p;
-    }
-  ];
-
-  let lastError;
-
-  for (const service of services) {
-    try {
-      const a = await service();
-      const address = [
-        a.state || a.province || a.prefecture,
-        a.city || a.town || a.municipality ||
-          a.city_district || a.ward,
-        a.suburb || a.neighbourhood ||
-          a.quarter || a.village || a.hamlet,
-        a.road || a.street,
-        a.house_number || a.housenumber
-      ].filter(Boolean).join("");
-
-      if (address) return address;
-      lastError = new Error("住所情報が不足しています");
-    } catch (e) {
-      lastError = e;
-    }
-  }
-
-  throw lastError || new Error("住所検索失敗");
+function first(...values) {
+  return values.find(v => typeof v === "string" && v.trim()) || "";
 }
 
-async function finish() {
-  if (finished) return;
-  finished = true;
+function nominatimParts(a) {
+  return {
+    prefecture: first(a.state, a.province, a.prefecture),
+    city: first(a.city, a.town, a.municipality,
+      a.city_district, a.ward, a.county),
+    town: first(a.suburb, a.neighbourhood, a.quarter,
+      a.residential, a.village, a.hamlet, a.city_block),
+    street: first(a.road, a.street),
+    number: first(a.house_number, a.housenumber)
+  };
+}
+
+function photonParts(p) {
+  return {
+    prefecture: first(p.state, p.province),
+    city: first(p.city, p.town, p.district, p.county),
+    town: first(p.suburb, p.locality, p.name),
+    street: first(p.street),
+    number: first(p.housenumber, p.house_number)
+  };
+}
+
+async function getNominatim(lat, lon) {
+  const url = new URL(
+    "https://nominatim.openstreetmap.org/reverse"
+  );
+  url.search = new URLSearchParams({
+    format: "jsonv2",
+    lat: String(lat),
+    lon: String(lon),
+    zoom: "18",
+    addressdetails: "1",
+    "accept-language": "ja"
+  });
+
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("Nominatim接続失敗");
+
+  const data = await response.json();
+  return {
+    parts: nominatimParts(data.address || {}),
+    display: data.display_name || ""
+  };
+}
+
+async function getPhoton(lat, lon) {
+  const url = new URL(
+    "https://photon.komoot.io/reverse"
+  );
+  url.search = new URLSearchParams({
+    lat: String(lat),
+    lon: String(lon),
+    lang: "ja"
+  });
+
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("Photon接続失敗");
+
+  const data = await response.json();
+  const p = data.features?.[0]?.properties;
+  if (!p) throw new Error("Photon住所データなし");
+
+  return {
+    parts: photonParts(p),
+    display: ""
+  };
+}
+
+async function findAddress(lat, lon, id) {
+  const results = await Promise.allSettled([
+    getNominatim(lat, lon),
+    getPhoton(lat, lon)
+  ]);
+
+  if (id !== runId) return;
+
+  const successful = results
+    .filter(r => r.status === "fulfilled")
+    .map(r => r.value);
+
+  if (!successful.length) {
+    throw new Error("住所検索サービスに接続できません");
+  }
+
+  // 両サービスから取得できた住所要素を補完
+  const keys = [
+    "prefecture", "city", "town", "street", "number"
+  ];
+  const parts = {};
+
+  for (const key of keys) {
+    parts[key] = first(
+      ...successful.map(r => r.parts[key])
+    );
+  }
+
+  const address = [
+    parts.prefecture,
+    parts.city,
+    parts.town,
+    parts.street,
+    parts.number
+  ].filter(Boolean).join("");
+
+  addText("h3", "推定住所");
+  addText(
+    "p",
+    address || successful.find(r => r.display)?.display ||
+      "住所データが見つかりませんでした",
+    "address"
+  );
+
+  const details = [
+    ["都道府県", parts.prefecture],
+    ["市区町村", parts.city],
+    ["町名など", parts.town],
+    ["道路名", parts.street],
+    ["番地", parts.number]
+  ];
+
+  addText("h3", "住所の取得内容");
+
+  for (const [label, value] of details) {
+    addText("p", `${label}: ${value || "データなし"}`);
+  }
+
+  addText(
+    "p",
+    "丁目・番地は地図データに登録されている場合のみ表示されます。",
+    "muted"
+  );
+}
+
+async function finish(best, id, message) {
+  if (id !== runId) return;
   stop();
 
   if (!best) {
@@ -151,43 +225,46 @@ async function finish() {
 
   const { latitude, longitude, accuracy } = best.coords;
 
-  statusEl.textContent = "座標取得完了";
+  statusEl.textContent = message;
   addText("h3", "測位結果");
   addText("p", `緯度: ${latitude.toFixed(7)}`);
   addText("p", `経度: ${longitude.toFixed(7)}`);
   addText("p", `推定誤差: 約${Math.round(accuracy)}m`);
-  addText("p", accuracy <= 5
-    ? "端末の推定誤差は5m以内です（保証ではありません）"
-    : "推定誤差は5mを超えています");
+
+  addText(
+    "p",
+    accuracy <= 5
+      ? "端末の推定誤差は5m以内です。実際の誤差は保証されません。"
+      : "推定誤差は5mを超えています。",
+    "muted"
+  );
 
   const map = document.createElement("a");
-  map.href = `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=18/${latitude}/${longitude}`;
+  map.href =
+    `https://www.openstreetmap.org/?mlat=${latitude}` +
+    `&mlon=${longitude}#map=18/${latitude}/${longitude}`;
   map.target = "_blank";
   map.rel = "noopener noreferrer";
   map.textContent = "地図で確認";
   resultEl.appendChild(map);
 
   try {
-    statusEl.textContent = "住所を検索しています...";
-    const address = await findAddress(latitude, longitude);
-    addText("h3", "推定住所");
-    addText("p", address);
-    statusEl.textContent = "測位完了";
-  } catch (e) {
-    statusEl.textContent =
-      "座標取得成功・住所検索失敗";
-    addText("p", "住所検索サービスに接続できませんでした。");
+    statusEl.textContent = "住所を検索中...";
+    await findAddress(latitude, longitude, id);
+    if (id === runId) statusEl.textContent = "測位完了";
+  } catch (error) {
+    if (id === runId) {
+      statusEl.textContent = "座標取得成功・住所検索失敗";
+      addText("p", error.message || String(error), "muted");
+    }
+  } finally {
+    if (id === runId) startBtn.disabled = false;
   }
-
-  startBtn.disabled = false;
 }
 
 function locate() {
   stop();
-  best = null;
-  goodSamples = 0;
-  finished = false;
-  startedAt = Date.now();
+  const id = ++runId;
   resultEl.replaceChildren();
 
   if (!navigator.geolocation) {
@@ -202,11 +279,15 @@ function locate() {
   }
 
   startBtn.disabled = true;
-  statusEl.textContent = "高精度測位中...";
+  let best = null;
+  let goodSamples = 0;
+  const startedAt = Date.now();
+
+  statusEl.textContent = "測位中...最大60秒待ちます";
 
   watchId = navigator.geolocation.watchPosition(
     position => {
-      if (finished) return;
+      if (id !== runId) return;
 
       if (!best ||
           position.coords.accuracy < best.coords.accuracy) {
@@ -218,7 +299,8 @@ function locate() {
       );
 
       statusEl.textContent =
-        `測位中 ${elapsed}秒・最良誤差 約${Math.round(best.coords.accuracy)}m`;
+        `測位中 ${elapsed}秒 / 最良誤差 約` +
+        `${Math.round(best.coords.accuracy)}m`;
 
       if (position.coords.accuracy <= 5) {
         goodSamples++;
@@ -227,18 +309,20 @@ function locate() {
       }
 
       if (goodSamples >= 3) {
-        finish();
+        finish(best, id, "5m以内の測位結果を複数回取得");
       }
     },
     error => {
+      if (id !== runId) return;
+
       if (best) {
-        finish();
+        finish(best, id, "取得済みの最良結果を表示");
         return;
       }
 
       const messages = {
         1: "位置情報の許可が必要です",
-        2: "位置情報を取得できません",
+        2: "位置情報を取得できません。屋外で再試行してください",
         3: "測位がタイムアウトしました"
       };
 
@@ -255,13 +339,8 @@ function locate() {
   );
 
   timerId = setTimeout(() => {
-    if (best) {
-      finish();
-    } else {
-      stop();
-      statusEl.textContent =
-        "測位できませんでした。設定を確認してください";
-      startBtn.disabled = false;
+    if (id === runId) {
+      finish(best, id, "測位終了・最良結果を表示");
     }
   }, 60000);
 }
