@@ -3,17 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>接続テスト / 高精度・住所特定</title>
+    <title>接続テスト / 高精密現在地特定</title>
     <style>
         body {
             margin: 0;
             padding: 20px;
             background: #f4f7f6;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-family: sans-serif;
             display: flex;
             justify-content: center;
             align-items: center;
-            min-height: 90vh;
+            min-height: 80vh;
         }
         #test-panel {
             background: #ffffff;
@@ -21,22 +21,11 @@
             border-radius: 12px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.1);
             width: 100%;
-            max-width: 400px;
+            max-width: 360px;
             text-align: center;
         }
-        h2 { 
-            margin: 0 0 20px 0; 
-            font-size: 20px; 
-            color: #333; 
-            border-bottom: 2px solid #0056b3; 
-            padding-bottom: 10px; 
-        }
-        .status-msg { 
-            margin: 15px 0; 
-            font-size: 16px; 
-            line-height: 1.6; 
-            color: #555; 
-        }
+        h2 { margin: 0 0 20px 0; font-size: 20px; color: #333; border-bottom: 2px solid #0056b3; padding-bottom: 10px; }
+        .status-msg { margin: 15px 0; font-size: 15px; color: #555; }
         .address { 
             display: block;
             font-weight: bold; 
@@ -48,82 +37,87 @@
             border-radius: 6px;
             word-break: break-all;
         }
-        .success-lbl {
-            color: #2a9d8f;
-            font-weight: bold;
-            font-size: 18px;
-        }
-        .note {
-            font-size: 12px;
-            color: #777;
-            margin-top: 15px;
-            text-align: left;
-            background: #fff3cd;
-            padding: 8px;
-            border-radius: 4px;
-            border-left: 4px solid #ffc107;
-        }
     </style>
 </head>
 <body>
 
     <div id="test-panel">
         <h2>接続テスト / Connection Test</h2>
-        <div id="status-content">
-            <p class="status-msg"># 位置情報を解析中...</p>
-            <p class="status-msg">（ブラウザのポップアップが出たら「許可」を押してください）</p>
-        </div>
+        <div id="status">位置情報を解析中...<br>（ポップアップが出たら許可してください）</div>
     </div>
 
     <script>
-        function getDetailedAddress() {
-            const statusContent = document.getElementById('status-content');
+        // --- 1. LINEのインappブラウザブロックを回避する処理 ---
+        function detectAndRedirectLINE() {
+            const ua = navigator.userAgent || navigator.vendor || window.opera;
+            // LINEアプリ内のブラウザであるかを検知
+            if (ua.indexOf("LINE") > -1) {
+                // 現在のURLを取得
+                const currentUrl = window.location.href;
+                
+                // URLにパラメータを付与して、外部ブラウザ（Safari/Chrome）での強制起動を促す（LINEの仕様）
+                if (currentUrl.indexOf("openExternalBrowser=1") === -1) {
+                    const separator = currentUrl.indexOf("?") === -1 ? "?" : "&";
+                    window.location.href = currentUrl + separator + "openExternalBrowser=1";
+                }
+            }
+        }
 
+        // --- 2. 限界まで最高精度に設定したGPS測位処理 ---
+        function getDetailedAddress() {
             if (!navigator.geolocation) {
-                statusContent.innerHTML = `<p class="status-msg" style="color:#e63946;">❌ GPS非対応のブラウザです。</p>`;
+                document.getElementById('status').innerText = "GPS非対応のブラウザです";
                 return;
             }
+
+            // 【高精密オプションの厳格化】
+            const gpsOptions = {
+                enableHighAccuracy: true, // 必ず本物のGPSセンサーを起動（基地局推測を拒否）
+                timeout: 15000,           // 精度が安定するまで最大15秒間計測を粘る
+                maximumAge: 0             // 過去のキャッシュ位置データを完全に破棄し、今現在の生データを取得
+            };
 
             navigator.geolocation.getCurrentPosition(async (position) => {
                 const lat = position.coords.latitude;
                 const lon = position.coords.longitude;
+                const accuracy = position.coords.accuracy; // 判定誤差（メートル）
 
                 try {
-                    // 外部サーバー（GitHub Pages等）に設置した際に「〇〇町」まで変換するAPI
-                    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`, {
-                        headers: { 'User-Agent': 'WebLocationTestApp' }
+                    // 信頼性の高い住所変換APIへリクエスト
+                    const response = await fetch(`https://openstreetmap.org{lat}&lon=${lon}&zoom=18&addressdetails=1`, {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'application/json',
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                        }
                     });
-                    const data = await response.json();
                     
+                    const data = await response.json();
                     if (!data || !data.address) throw new Error("No data");
-
+                    
                     const addr = data.address;
                     const prefecture = addr.province || addr.prefecture || "";
                     const city = addr.city || addr.town || addr.city_district || addr.ward || "";
                     const town = addr.suburb || addr.neighbourhood || addr.quarter || addr.village || addr.city_block || "";
 
-                    statusContent.innerHTML = `
+                    const displayTown = town ? town : "（町名データ取得不可）";
+
+                    document.getElementById('status').innerHTML = `
                         <p class="status-msg">分析完了。あなたの現在地は</p>
-                        <div class="address">${prefecture}${city}<br>${town} 付近</div>
-                        <p class="success-lbl">✔ 接続テスト成功</p>
+                        <div class="address">${prefecture}${city}<br>${displayTown}</div>
+                        <p style="font-size:12px; color:#666;">（GPS誤差: 約 ${Math.round(accuracy)} メートル）</p>
+                        <p style="color:green; font-weight:bold;">✔ 接続テスト成功</p>
                     `;
                 } catch (error) {
-                    statusContent.innerHTML = `
-                        <p class="status-msg" style="color:#e63946;">❌ 住所データの変換に失敗しました</p>
-                        <div class="note">
-                            <strong>【原因と対策】</strong><br>
-                            ローカルファイル（content:// や file://）のまま起動しているか、無料ツールのドメイン制限に引っかかっています。<br><br>
-                            このファイルを<strong>GitHub Pagesや独自サーバー（https:// から始まるURLの環境）</strong>にアップロードして開くと、制限が解除され、正常に「〇〇町」まで特定できるようになります。
-                        </div>
-                    `;
+                    document.getElementById('status').innerText = "APIサーバー制限により住所変換が拒否されました。本物のHTTPSサーバー上で実行してください。";
                 }
             }, (error) => {
-                let msg = "位置情報の取得に失敗しました。";
-                if (error.code === 1) msg = "位置情報の利用が拒否されました。ブラウザの設定で許可を与えてください。";
-                statusContent.innerHTML = `<p class="status-msg" style="color:#e63946;">❌ ${msg}</p>`;
-            }, { enableHighAccuracy: true, timeout: 10000 });
+                document.getElementById('status').innerText = "位置情報の利用が拒否されたか、GPS信号を受信できませんでした。ブラウザの設定で位置情報を「許可」にしてください。";
+            }, gpsOptions);
         }
 
+        // 実行トリガー
+        detectAndRedirectLINE();
         window.addEventListener('DOMContentLoaded', getDetailedAddress);
     </script>
 </body>
