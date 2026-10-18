@@ -4,27 +4,27 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>高精度位置情報取得</title>
+<title>高精度現在地測定</title>
 <style>
 body {
   font-family: sans-serif;
-  background: #f3f6f9;
+  background: #f4f7f6;
   padding: 20px;
   text-align: center;
 }
 .card {
-  max-width: 400px;
-  margin: 30px auto;
+  max-width: 420px;
+  margin: 20px auto;
   padding: 24px;
   background: white;
-  border-radius: 16px;
+  border-radius: 14px;
   box-shadow: 0 4px 16px #0001;
 }
 button {
   padding: 12px 20px;
   border: 0;
   border-radius: 8px;
-  background: #0066cc;
+  background: #075db5;
   color: white;
   font-size: 16px;
 }
@@ -35,12 +35,11 @@ button {
 </style>
 </head>
 <body>
-
 <div class="card">
-  <h2>現在地測定</h2>
-  <p id="status">ボタンを押して測定を開始</p>
-  <div id="result"></div>
-  <button id="start">測定開始</button>
+<h2>高精度現在地測定</h2>
+<p id="status">測定開始を押してください</p>
+<div id="result"></div>
+<button id="start">測定開始</button>
 </div>
 
 <script>
@@ -48,109 +47,186 @@ const statusEl = document.getElementById("status");
 const resultEl = document.getElementById("result");
 const startBtn = document.getElementById("start");
 
-startBtn.addEventListener("click", locate);
+let watchId = null;
+let timerId = null;
+let best = null;
+let goodSamples = 0;
+let startedAt = 0;
+let finished = false;
 
-function locate() {
-  if (!navigator.geolocation) {
-    statusEl.textContent = "位置情報に対応していません";
-    return;
+function addText(tag, text) {
+  const el = document.createElement(tag);
+  el.textContent = text;
+  resultEl.appendChild(el);
+}
+
+function stop() {
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
   }
+  if (timerId !== null) {
+    clearTimeout(timerId);
+    timerId = null;
+  }
+}
 
-  startBtn.disabled = true;
-  resultEl.replaceChildren();
-  statusEl.textContent = "高精度で測位中...";
-
-  let best = null;
-  let watchId = null;
-  let finished = false;
-
-  const finish = async () => {
-    if (finished) return;
-    finished = true;
-
-    if (watchId !== null) {
-      navigator.geolocation.clearWatch(watchId);
-    }
-
-    if (!best) {
-      statusEl.textContent = "位置情報を取得できませんでした";
-      startBtn.disabled = false;
-      return;
-    }
-
-    const { latitude, longitude, accuracy } = best.coords;
-    statusEl.textContent = "座標を取得。住所を検索中...";
-
-    const coords = document.createElement("p");
-    coords.textContent =
-      `緯度: ${latitude}\n経度: ${longitude}\n推定誤差: 約${Math.round(accuracy)}m`;
-    resultEl.appendChild(coords);
-
-    try {
+async function findAddress(lat, lon) {
+  const services = [
+    async () => {
       const url = new URL(
         "https://nominatim.openstreetmap.org/reverse"
       );
-
       url.search = new URLSearchParams({
         format: "jsonv2",
-        lat: latitude,
-        lon: longitude,
+        lat: String(lat),
+        lon: String(lon),
         zoom: "18",
         addressdetails: "1",
         "accept-language": "ja"
       });
 
       const response = await fetch(url);
-
-      if (!response.ok) {
-        throw new Error("住所検索サービスが利用できません");
-      }
+      if (!response.ok) throw new Error("Nominatim error");
 
       const data = await response.json();
+      if (!data.address) throw new Error("住所なし");
+      return data.address;
+    },
+    async () => {
+      const url = new URL(
+        "https://photon.komoot.io/reverse"
+      );
+      url.search = new URLSearchParams({
+        lat: String(lat),
+        lon: String(lon),
+        lang: "ja"
+      });
 
-      if (!data.address) {
-        throw new Error("住所が見つかりません");
-      }
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Photon error");
 
-      const a = data.address;
+      const data = await response.json();
+      const p = data.features?.[0]?.properties;
+      if (!p) throw new Error("住所なし");
+      return p;
+    }
+  ];
+
+  let lastError;
+
+  for (const service of services) {
+    try {
+      const a = await service();
       const address = [
         a.state || a.province || a.prefecture,
-        a.city || a.town || a.city_district || a.ward,
-        a.suburb || a.neighbourhood || a.village || a.hamlet
+        a.city || a.town || a.municipality ||
+          a.city_district || a.ward,
+        a.suburb || a.neighbourhood ||
+          a.quarter || a.village || a.hamlet,
+        a.road || a.street,
+        a.house_number || a.housenumber
       ].filter(Boolean).join("");
 
-      const heading = document.createElement("h3");
-      heading.textContent = "推定住所";
-      resultEl.appendChild(heading);
-
-      const addressEl = document.createElement("p");
-      addressEl.textContent = address || data.display_name || "住所不明";
-      resultEl.appendChild(addressEl);
-
-      statusEl.textContent = "測位完了";
-    } catch (error) {
-      statusEl.textContent =
-        "座標は取得済みですが、住所検索に失敗しました";
-    } finally {
-      startBtn.disabled = false;
+      if (address) return address;
+      lastError = new Error("住所情報が不足しています");
+    } catch (e) {
+      lastError = e;
     }
-  };
+  }
+
+  throw lastError || new Error("住所検索失敗");
+}
+
+async function finish() {
+  if (finished) return;
+  finished = true;
+  stop();
+
+  if (!best) {
+    statusEl.textContent = "位置情報を取得できませんでした";
+    startBtn.disabled = false;
+    return;
+  }
+
+  const { latitude, longitude, accuracy } = best.coords;
+
+  statusEl.textContent = "座標取得完了";
+  addText("h3", "測位結果");
+  addText("p", `緯度: ${latitude.toFixed(7)}`);
+  addText("p", `経度: ${longitude.toFixed(7)}`);
+  addText("p", `推定誤差: 約${Math.round(accuracy)}m`);
+  addText("p", accuracy <= 5
+    ? "端末の推定誤差は5m以内です（保証ではありません）"
+    : "推定誤差は5mを超えています");
+
+  const map = document.createElement("a");
+  map.href = `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=18/${latitude}/${longitude}`;
+  map.target = "_blank";
+  map.rel = "noopener noreferrer";
+  map.textContent = "地図で確認";
+  resultEl.appendChild(map);
+
+  try {
+    statusEl.textContent = "住所を検索しています...";
+    const address = await findAddress(latitude, longitude);
+    addText("h3", "推定住所");
+    addText("p", address);
+    statusEl.textContent = "測位完了";
+  } catch (e) {
+    statusEl.textContent =
+      "座標取得成功・住所検索失敗";
+    addText("p", "住所検索サービスに接続できませんでした。");
+  }
+
+  startBtn.disabled = false;
+}
+
+function locate() {
+  stop();
+  best = null;
+  goodSamples = 0;
+  finished = false;
+  startedAt = Date.now();
+  resultEl.replaceChildren();
+
+  if (!navigator.geolocation) {
+    statusEl.textContent = "位置情報に対応していません";
+    return;
+  }
+
+  if (!window.isSecureContext &&
+      location.hostname !== "localhost") {
+    statusEl.textContent = "HTTPSで開いてください";
+    return;
+  }
+
+  startBtn.disabled = true;
+  statusEl.textContent = "高精度測位中...";
 
   watchId = navigator.geolocation.watchPosition(
     position => {
-      if (
-        !best ||
-        position.coords.accuracy < best.coords.accuracy
-      ) {
+      if (finished) return;
+
+      if (!best ||
+          position.coords.accuracy < best.coords.accuracy) {
         best = position;
       }
 
-      statusEl.textContent =
-        `測位中... 推定誤差 約${Math.round(
-          best.coords.accuracy
-        )}m`;
+      const elapsed = Math.round(
+        (Date.now() - startedAt) / 1000
+      );
 
-      if (position.coords.accuracy <= 15) {
+      statusEl.textContent =
+        `測位中 ${elapsed}秒・最良誤差 約${Math.round(best.coords.accuracy)}m`;
+
+      if (position.coords.accuracy <= 5) {
+        goodSamples++;
+      } else {
+        goodSamples = 0;
+      }
+
+      if (goodSamples >= 3) {
         finish();
       }
     },
@@ -168,22 +244,29 @@ function locate() {
 
       statusEl.textContent =
         messages[error.code] || "測位エラー";
-      if (watchId !== null) {
-        navigator.geolocation.clearWatch(watchId);
-      }
+      stop();
       startBtn.disabled = false;
     },
     {
       enableHighAccuracy: true,
       maximumAge: 0,
-      timeout: 30000
+      timeout: 65000
     }
   );
 
-  // 30秒後に、取得できた中で最良の結果を採用
-  setTimeout(finish, 30000);
+  timerId = setTimeout(() => {
+    if (best) {
+      finish();
+    } else {
+      stop();
+      statusEl.textContent =
+        "測位できませんでした。設定を確認してください";
+      startBtn.disabled = false;
+    }
+  }, 60000);
 }
-</script>
 
+startBtn.addEventListener("click", locate);
+</script>
 </body>
 </html>
